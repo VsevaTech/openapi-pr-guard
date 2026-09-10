@@ -1,0 +1,234 @@
+openapi: 3.0.3
+info:
+  title: Example Billing API
+  version: 1.1.0
+  description: >-
+    Backward-compatible revision of openapi-v1.yaml. Running the guard
+    against it should exit with code 0.
+
+paths:
+  /v1/users:
+    get:
+      operationId: listUsers
+      summary: List users (paginated)
+      description: Returns users ordered by creation date.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque pagination cursor
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      operationId: createUser
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Validation error
+        "429":
+          description: Too many requests
+
+  /v1/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getUser
+      summary: Get a user
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteUser
+      summary: Delete a user
+      responses:
+        "204":
+          description: Deleted
+    patch:
+      operationId: updateUser
+      summary: Update a user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /v1/companies/{id}:
+    get:
+      operationId: getCompany
+      summary: Get a company
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The company
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Company"
+
+  /v1/payments:
+    get:
+      operationId: listPayments
+      summary: List payments
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, settled, failed, refunded]
+      responses:
+        "200":
+          description: Payments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Payment"
+
+  /v1/subscriptions:
+    get:
+      operationId: listSubscriptions
+      summary: List subscriptions
+      responses:
+        "200":
+          description: Subscriptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Subscription"
+
+components:
+  schemas:
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        avatarUrl:
+          type: string
+          description: Optional profile picture
+
+    CreateUserRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          example: jane@example.com
+        name:
+          type: string
+        phone:
+          type: string
+          description: Optional contact phone
+        locale:
+          type: string
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+
+    Company:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        website:
+          type: string
+        country:
+          type: string
+
+    Payment:
+      type: object
+      required: [id, amount, status]
+      properties:
+        id:
+          type: string
+        amount:
+          type: number
+          description: Amount in the account currency (2 decimal places)
+        status:
+          type: string
+          enum: [pending, settled, failed]
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    Subscription:
+      type: object
+      required: [id, plan]
+      properties:
+        id:
+          type: string
+        plan:
+          type: string

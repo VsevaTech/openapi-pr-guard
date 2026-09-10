@@ -1,0 +1,3 @@
+# Configuration for OpenAPI PR Guard (all keys optional).
+fail_on_breaking: true
+ignore_rules: []

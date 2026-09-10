@@ -1,0 +1,74 @@
+name: "OpenAPI PR Guard"
+description: "Detect breaking OpenAPI changes in a pull request and publish a human-readable report."
+author: "Seva Trofimenko"
+
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  spec:
+    description: "Path to the OpenAPI file (YAML or JSON) relative to the repository root."
+    required: true
+  fail-on-breaking:
+    description: "Fail the step (exit code 1) when breaking changes are detected."
+    required: false
+    default: "true"
+  base-ref:
+    description: "Git ref to compare against. Defaults to the pull request base commit."
+    required: false
+    default: ""
+  comment:
+    description: "Post (and keep updated) a comment with the report on the pull request. Requires pull-requests: write."
+    required: false
+    default: "false"
+  github-token:
+    description: "Token used to post the PR comment."
+    required: false
+    default: ${{ github.token }}
+  config:
+    description: "Path to an .openapi-pr-guard.yaml config file. Defaults to the one in the repository root, if present."
+    required: false
+    default: ""
+  python-version:
+    description: "Python version used to run the checker."
+    required: false
+    default: "3.12"
+
+outputs:
+  breaking-count:
+    description: "Number of breaking changes."
+    value: ${{ steps.guard.outputs.breaking-count }}
+  warning-count:
+    description: "Number of warnings."
+    value: ${{ steps.guard.outputs.warning-count }}
+  non-breaking-count:
+    description: "Number of non-breaking changes."
+    value: ${{ steps.guard.outputs.non-breaking-count }}
+  has-breaking:
+    description: "'true' when at least one breaking change was found."
+    value: ${{ steps.guard.outputs.has-breaking }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install OpenAPI PR Guard
+      shell: bash
+      run: python -m pip install --quiet --disable-pip-version-check "${{ github.action_path }}"
+
+    - name: Compare specifications
+      id: guard
+      shell: bash
+      env:
+        INPUT_SPEC: ${{ inputs.spec }}
+        INPUT_FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
+        INPUT_BASE_REF: ${{ inputs.base-ref }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_CONFIG: ${{ inputs.config }}
+      run: python -m openapi_pr_guard.github_action
