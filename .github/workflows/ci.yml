@@ -61,8 +61,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: OpenAPI PR Guard (examples/openapi-v1.yaml)
+      - name: OpenAPI PR Guard (examples/demo-api.yaml)
         uses: ./
         with:
-          spec: examples/openapi-v1.yaml
+          spec: examples/demo-api.yaml
           comment: "true"
