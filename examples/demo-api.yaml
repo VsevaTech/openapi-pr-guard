@@ -10,7 +10,7 @@ paths:
   /v1/users:
     get:
       operationId: listUsers
-      summary: List users
+      summary: List users (paginated)
       parameters:
         - name: limit
           in: query
@@ -64,8 +64,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
-        "404":
-          description: Not found
     delete:
       operationId: deleteUser
       summary: Delete a user
@@ -130,7 +128,7 @@ components:
 
     CreateUserRequest:
       type: object
-      required: [email]
+      required: [email, phone]
       properties:
         email:
           type: string
@@ -138,7 +136,7 @@ components:
           type: string
         phone:
           type: string
-          description: Optional contact phone
+          description: Contact phone (now mandatory)
 
     Company:
       type: object
@@ -147,8 +145,6 @@ components:
         id:
           type: string
         name:
-          type: string
-        address:
           type: string
         website:
           type: string
