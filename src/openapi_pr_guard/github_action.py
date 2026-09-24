@@ -2,7 +2,8 @@
 
 This is the only module that knows about GitHub: it locates the base revision
 of the spec with ``git``, writes the report to ``$GITHUB_STEP_SUMMARY``,
-exposes step outputs and (optionally) upserts a pull-request comment.
+exposes step outputs and (optionally) upserts a pull-request comment and an
+"API change summary" section in the pull-request description.
 The diff engine itself is untouched by any of this.
 """
 
@@ -10,21 +11,29 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
-from openapi_pr_guard.cli import EXIT_BREAKING, EXIT_ERROR, EXIT_OK
+from openapi_pr_guard.cli import EXIT_ERROR, EXIT_OK, apply_version_policy_mode, exit_code
 from openapi_pr_guard.config import ConfigError, load_config
 from openapi_pr_guard.diff import diff_specs
 from openapi_pr_guard.loader import SpecError, load_spec, parse_spec
 from openapi_pr_guard.models import DiffResult
-from openapi_pr_guard.reporter import render_markdown, render_text
+from openapi_pr_guard.reporter import render_change_summary, render_markdown, render_text
+from openapi_pr_guard.versioning import PolicySeverity
 
 COMMENT_MARKER = "<!-- openapi-pr-guard -->"
+
+
+def summary_markers(spec: str) -> tuple[str, str]:
+    """Markers delimiting the section this action owns in the PR description (one per spec file)."""
+    return (f"<!-- openapi-pr-guard:summary:{spec}:start -->", f"<!-- openapi-pr-guard:summary:{spec}:end -->")
 
 
 def main() -> int:
@@ -34,6 +43,7 @@ def main() -> int:
         return EXIT_ERROR
     fail_on_breaking = _truthy(os.environ.get("INPUT_FAIL_ON_BREAKING", "true"))
     want_comment = _truthy(os.environ.get("INPUT_COMMENT", "false"))
+    want_pr_description = _truthy(os.environ.get("INPUT_PR_DESCRIPTION", "false"))
 
     base_sha = _resolve_base_sha(os.environ.get("INPUT_BASE_REF", "").strip())
     if base_sha is None:
@@ -42,6 +52,7 @@ def main() -> int:
 
     try:
         config = load_config(os.environ.get("INPUT_CONFIG") or None)
+        apply_version_policy_mode(config, os.environ.get("INPUT_VERSION_POLICY", "").strip().lower() or None)
         head_doc = load_spec(spec)
         base_text = _git_show(base_sha, spec)
         if base_text is None:
@@ -51,22 +62,23 @@ def main() -> int:
             _notice(f"{spec} is new in this PR; skipping comparison")
             return EXIT_OK
         base_doc = parse_spec(base_text, source=f"{base_sha[:12]}:{spec}")
-        result = diff_specs(base_doc, head_doc, ignore_rules=config.ignore_rules)
+        result = diff_specs(base_doc, head_doc, ignore_rules=config.ignore_rules, version_policy=config.version_policy)
     except (SpecError, ConfigError) as exc:
         _error(str(exc))
         return EXIT_ERROR
 
     markdown = render_markdown(result)
+    change_summary = render_change_summary(result, spec)
     sys.stdout.write(render_text(result))
     _write_summary(markdown)
-    _write_outputs(result)
+    _write_outputs(result, change_summary)
     _annotate(result)
     if want_comment:
         _upsert_pr_comment(markdown)
+    if want_pr_description:
+        _upsert_pr_description(spec, change_summary)
 
-    if result.has_breaking and (fail_on_breaking and config.fail_on_breaking):
-        return EXIT_BREAKING
-    return EXIT_OK
+    return exit_code(result, fail_on_breaking and config.fail_on_breaking)
 
 
 # -- git ------------------------------------------------------------------
@@ -131,13 +143,24 @@ def _write_summary(markdown: str) -> None:
     _append_to_env_file("GITHUB_STEP_SUMMARY", markdown)
 
 
-def _write_outputs(result: DiffResult) -> None:
+def _write_outputs(result: DiffResult, change_summary: str) -> None:
     lines = (
         f"breaking-count={len(result.breaking)}\n"
         f"warning-count={len(result.warnings)}\n"
         f"non-breaking-count={len(result.non_breaking)}\n"
         f"has-breaking={'true' if result.has_breaking else 'false'}\n"
     )
+    check = result.version
+    if check is not None:
+        lines += (
+            f"version-ok={'true' if check.ok else 'false'}\n"
+            f"base-version={check.base_version or ''}\n"
+            f"head-version={check.head_version or ''}\n"
+            f"required-bump={check.required_bump.value}\n"
+            f"actual-bump={check.actual_bump.value if check.actual_bump else ''}\n"
+        )
+    delimiter = f"OPENAPI_PR_GUARD_{uuid.uuid4().hex}"
+    lines += f"change-summary<<{delimiter}\n{change_summary}{delimiter}\n"
     _append_to_env_file("GITHUB_OUTPUT", lines)
 
 
@@ -154,6 +177,10 @@ def _annotate(result: DiffResult) -> None:
     for change in result.breaking:
         endpoint = f"{change.method} {change.path}" if change.method else change.path
         _error(f"{endpoint}: {change.message}" + (f" ({change.location})" if change.location else ""))
+    if result.version is not None:
+        report = _error if result.version.severity is PolicySeverity.ERROR else _warning
+        for violation in result.version.violations:
+            report(f"Version policy ({violation.rule_id}): {violation.message}")
 
 
 def _upsert_pr_comment(markdown: str) -> None:
@@ -174,6 +201,36 @@ def _upsert_pr_comment(markdown: str) -> None:
             _api(token, "POST", f"{api}/repos/{repo}/issues/{number}/comments", {"body": body})
     except (urllib.error.URLError, OSError, ValueError) as exc:
         _warning(f"PR comment failed (needs 'pull-requests: write' permission): {exc}")
+
+
+def _upsert_pr_description(spec: str, change_summary: str) -> None:
+    """Keep an "API change summary" section in the PR body, delimited by markers, in sync."""
+    token = os.environ.get("INPUT_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    number = _event_payload().get("pull_request", {}).get("number")
+    if not (token and repo and isinstance(number, int)):
+        _warning("PR description update skipped: token, repository or pull request number unavailable")
+        return
+    api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    try:
+        pull = _api(token, "GET", f"{api}/repos/{repo}/pulls/{number}")
+        current = (pull or {}).get("body") or ""
+        updated = merge_pr_description(current, spec, change_summary)
+        if updated != current:
+            _api(token, "PATCH", f"{api}/repos/{repo}/pulls/{number}", {"body": updated})
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        _warning(f"PR description update failed (needs 'pull-requests: write' permission): {exc}")
+
+
+def merge_pr_description(body: str, spec: str, change_summary: str) -> str:
+    """Replace this action's section in ``body`` (or append it), leaving everything else untouched."""
+    start, end = summary_markers(spec)
+    section = f"{start}\n{change_summary.rstrip()}\n{end}"
+    pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
+    if pattern.search(body):
+        return pattern.sub(lambda _: section, body, count=1)
+    body = body.replace("\r\n", "\n").rstrip()
+    return f"{body}\n\n{section}\n" if body else f"{section}\n"
 
 
 def _api(token: str, method: str, url: str, payload: dict[str, Any] | None = None) -> Any:

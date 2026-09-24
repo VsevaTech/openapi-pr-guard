@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openapi-pr-guard"
-version = "0.1.0"
+version = "0.2.0"
 description = "Detect breaking OpenAPI changes in pull requests — CLI and GitHub Action."
 readme = "README.md"
 license = { text = "MIT" }

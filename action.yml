@@ -22,8 +22,16 @@ inputs:
     description: "Post (and keep updated) a comment with the report on the pull request. Requires pull-requests: write."
     required: false
     default: "false"
+  version-policy:
+    description: "Check info.version against the detected changes: 'error' (fail the step), 'warning' (report only) or 'off'. Empty = use the config file (off by default)."
+    required: false
+    default: ""
+  pr-description:
+    description: "Keep an 'API change summary' section (endpoints added/changed/removed, version) in the pull request description. Requires pull-requests: write."
+    required: false
+    default: "false"
   github-token:
-    description: "Token used to post the PR comment."
+    description: "Token used to post the PR comment and update the PR description."
     required: false
     default: ${{ github.token }}
   config:
@@ -48,6 +56,24 @@ outputs:
   has-breaking:
     description: "'true' when at least one breaking change was found."
     value: ${{ steps.guard.outputs.has-breaking }}
+  version-ok:
+    description: "'true'/'false' when the version policy is enabled; empty otherwise."
+    value: ${{ steps.guard.outputs.version-ok }}
+  base-version:
+    description: "info.version of the base specification (version policy enabled only)."
+    value: ${{ steps.guard.outputs.base-version }}
+  head-version:
+    description: "info.version of the head specification (version policy enabled only)."
+    value: ${{ steps.guard.outputs.head-version }}
+  required-bump:
+    description: "Minimum bump required by the detected changes: none, patch, minor or major."
+    value: ${{ steps.guard.outputs.required-bump }}
+  actual-bump:
+    description: "Bump actually made between base and head: none, patch, minor or major (empty if undeterminable)."
+    value: ${{ steps.guard.outputs.actual-bump }}
+  change-summary:
+    description: "Markdown 'API change summary' (endpoints added/changed/removed), e.g. for release notes."
+    value: ${{ steps.guard.outputs.change-summary }}
 
 runs:
   using: composite
@@ -69,6 +95,8 @@ runs:
         INPUT_FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
         INPUT_BASE_REF: ${{ inputs.base-ref }}
         INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_VERSION_POLICY: ${{ inputs.version-policy }}
+        INPUT_PR_DESCRIPTION: ${{ inputs.pr-description }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_CONFIG: ${{ inputs.config }}
       run: python -m openapi_pr_guard.github_action
