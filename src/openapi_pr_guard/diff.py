@@ -12,6 +12,7 @@ from openapi_pr_guard.models import Change, DiffResult
 
 if TYPE_CHECKING:
     from openapi_pr_guard.rules.base import Rule
+    from openapi_pr_guard.versioning import VersionPolicy
 
 HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 
@@ -91,16 +92,25 @@ def diff_specs(
     head: dict[str, Any],
     rules: Sequence[Rule] | None = None,
     ignore_rules: Sequence[str] = (),
+    version_policy: VersionPolicy | None = None,
 ) -> DiffResult:
-    """Compare two parsed OpenAPI documents and return every detected change."""
+    """Compare two parsed OpenAPI documents and return every detected change.
+
+    With an enabled ``version_policy`` the result also carries a
+    :class:`~openapi_pr_guard.versioning.VersionCheck` for ``info.version``.
+    """
     from openapi_pr_guard.rules import DEFAULT_RULES  # local import: avoid cycle at module load
+    from openapi_pr_guard.versioning import check_version
 
     context = DiffContext.from_specs(base, head)
     ignored = set(ignore_rules)
     changes: list[Change] = []
     for rule in rules if rules is not None else DEFAULT_RULES:
         changes.extend(c for c in rule.check(context) if c.rule_id not in ignored)
-    return DiffResult(changes=changes)
+    result = DiffResult(changes=changes)
+    if version_policy is not None and version_policy.enabled:
+        result.version = check_version(base, head, changes, version_policy, ignored)
+    return result
 
 
 def _index_paths(document: dict[str, Any]) -> dict[str, PathEntry]:
