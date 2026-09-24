@@ -46,10 +46,20 @@ jobs:
       - name: CLI on examples — compatible spec must exit 0
         run: openapi-pr-guard --base examples/openapi-v1.yaml --head examples/openapi-v2-compatible.yaml
 
+      - name: CLI on examples — unversioned breaking spec must violate the version policy (exit 3)
+        run: |
+          set +e
+          openapi-pr-guard --base examples/openapi-v1.yaml --head examples/openapi-v2-breaking-unversioned.yaml \
+            --no-fail-on-breaking --version-policy error
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 3
+
       - name: CLI on examples — Markdown report to step summary
         run: |
           openapi-pr-guard --base examples/openapi-v1.yaml --head examples/openapi-v2-breaking.yaml \
-            --format markdown --no-fail-on-breaking >> "$GITHUB_STEP_SUMMARY"
+            --format markdown --no-fail-on-breaking --version-policy warning >> "$GITHUB_STEP_SUMMARY"
 
   dogfood:
     name: Run the action on this repository
@@ -66,3 +76,5 @@ jobs:
         with:
           spec: examples/demo-api.yaml
           comment: "true"
+          version-policy: error
+          pr-description: "true"

@@ -1,3 +1,14 @@
 # Configuration for OpenAPI PR Guard (all keys optional).
 fail_on_breaking: true
 ignore_rules: []
+
+# Check that info.version moves in step with the contract (off by default).
+# version_policy:
+#   scheme: semver        # semver | any (any = the version string just has to change)
+#   severity: error       # error = fail with exit code 3 | warning = report only
+#   pre_1_0: shift        # 0.x: minor stands in for major, patch for minor | strict
+#   require:              # minimum bump per change level: none | patch | minor | major
+#     breaking: major
+#     warning: minor
+#     non_breaking: minor
+#     docs: none

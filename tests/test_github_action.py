@@ -47,6 +47,8 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.setenv("INPUT_SPEC", "openapi.yaml")
     monkeypatch.delenv("INPUT_BASE_REF", raising=False)
     monkeypatch.delenv("INPUT_FAIL_ON_BREAKING", raising=False)
+    monkeypatch.delenv("INPUT_VERSION_POLICY", raising=False)
+    monkeypatch.delenv("INPUT_PR_DESCRIPTION", raising=False)
     return repo, summary, output
 
 
@@ -103,3 +105,63 @@ def test_explicit_base_ref_is_used(repo, monkeypatch):
     monkeypatch.setenv("INPUT_BASE_REF", "release")
     assert github_action.main() == 1
     assert "breaking-count=6" in output.read_text()
+
+
+def test_version_policy_violation_exits_3_and_sets_outputs(repo, monkeypatch, capsys):
+    repo_dir, summary, output = repo
+    shutil.copy(EXAMPLES / "openapi-v2-breaking-unversioned.yaml", repo_dir / "openapi.yaml")
+    monkeypatch.setenv("INPUT_FAIL_ON_BREAKING", "false")
+    monkeypatch.setenv("INPUT_VERSION_POLICY", "error")
+
+    assert github_action.main() == 3
+
+    outputs = output.read_text()
+    for line in ("version-ok=false", "base-version=1.0.0", "head-version=1.0.0", "required-bump=major"):
+        assert line in outputs
+    assert "### 🏷️ Version policy" in summary.read_text()
+    assert "::error::Version policy (version.not-bumped)" in capsys.readouterr().err
+
+
+def test_version_policy_warning_mode_annotates_but_passes(repo, monkeypatch, capsys):
+    repo_dir, _, _ = repo
+    shutil.copy(EXAMPLES / "openapi-v2-breaking-unversioned.yaml", repo_dir / "openapi.yaml")
+    monkeypatch.setenv("INPUT_FAIL_ON_BREAKING", "false")
+    monkeypatch.setenv("INPUT_VERSION_POLICY", "warning")
+    assert github_action.main() == 0
+    assert "::warning::Version policy (version.not-bumped)" in capsys.readouterr().err
+
+
+def test_change_summary_is_a_multiline_output(repo):
+    repo_dir, _, output = repo
+    shutil.copy(EXAMPLES / "openapi-v2-breaking.yaml", repo_dir / "openapi.yaml")
+    github_action.main()
+    text = output.read_text()
+    header, _, rest = text.partition("change-summary<<")
+    delimiter, _, body = rest.partition("\n")
+    assert delimiter.startswith("OPENAPI_PR_GUARD_")
+    assert body.startswith("### API change summary — `openapi.yaml`")
+    assert body.rstrip().endswith(delimiter)
+    assert "- `DELETE /v1/users/{id}`" in body
+
+
+def test_pr_description_is_updated_between_markers(repo, monkeypatch):
+    repo_dir, _, _ = repo
+    shutil.copy(EXAMPLES / "openapi-v2-compatible.yaml", repo_dir / "openapi.yaml")
+    monkeypatch.setenv("INPUT_PR_DESCRIPTION", "true")
+    monkeypatch.setenv("INPUT_GITHUB_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    calls = []
+
+    def fake_api(token, method, url, payload=None):
+        calls.append((method, url, payload))
+        return {"body": "Adds subscriptions."} if method == "GET" else {}
+
+    monkeypatch.setattr(github_action, "_api", fake_api)
+    assert github_action.main() == 0
+    assert [(m, u) for m, u, _ in calls] == [
+        ("GET", "https://api.github.com/repos/o/r/pulls/7"),
+        ("PATCH", "https://api.github.com/repos/o/r/pulls/7"),
+    ]
+    body = calls[1][2]["body"]
+    assert body.startswith("Adds subscriptions.\n\n<!-- openapi-pr-guard:summary:openapi.yaml:start -->")
+    assert "`GET /v1/subscriptions`" in body

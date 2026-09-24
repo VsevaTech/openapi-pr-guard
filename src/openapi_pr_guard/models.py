@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openapi_pr_guard.summary import EndpointSummary
+    from openapi_pr_guard.versioning import VersionCheck
 
 
 class Severity(StrEnum):
@@ -55,6 +59,8 @@ class Change:
 @dataclass(slots=True)
 class DiffResult:
     changes: list[Change] = field(default_factory=list)
+    version: VersionCheck | None = None
+    """Set when a version policy is enabled; see :mod:`openapi_pr_guard.versioning`."""
 
     def by_severity(self, severity: Severity) -> list[Change]:
         return [c for c in self.changes if c.severity is severity]
@@ -75,15 +81,29 @@ class DiffResult:
     def has_breaking(self) -> bool:
         return bool(self.breaking)
 
+    @property
+    def version_blocking(self) -> bool:
+        """The version policy is enabled with ``severity: error`` and was violated."""
+        return self.version is not None and self.version.blocking
+
     def sorted(self) -> list[Change]:
         return sorted(self.changes, key=lambda c: c.sort_key)
 
+    def endpoint_summary(self) -> EndpointSummary:
+        from openapi_pr_guard.summary import summarize_endpoints
+
+        return summarize_endpoints(self.changes)
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "summary": {
                 "breaking": len(self.breaking),
                 "warnings": len(self.warnings),
                 "non_breaking": len(self.non_breaking),
             },
+            "endpoints": self.endpoint_summary().to_dict(),
             "changes": [c.to_dict() for c in self.sorted()],
         }
+        if self.version is not None:
+            data["version"] = self.version.to_dict()
+        return data

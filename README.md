@@ -33,9 +33,11 @@ Design goals:
 - Detects removed endpoints and methods, removed or newly required parameters, request/response schema changes (types, required flags, removed properties, enums, formats, constraints), removed response codes and media types.
 - Understands request vs. response direction: a new required property is breaking in a request body and harmless in a response.
 - Resolves local `$ref`s (including recursive schemas), merges path-level and operation-level parameters, treats `/users/{id}` and `/users/{userId}` as the same endpoint, handles OpenAPI 3.0 `nullable` and 3.1 `type: [..]`.
-- Text, Markdown and JSON reports.
+- Optional **version policy**: checks that `info.version` moves in step with the contract (breaking change → major bump, …). SemVer-aware, but configurable and not SemVer-only.
+- **API change summary**: endpoints added / removed / changed, as a report section, a `summary` output format and a self-updating section in the PR description.
+- Text, Markdown, JSON and summary reports.
 - GitHub Action with step summary, step outputs, workflow annotations and an optional self-updating PR comment.
-- Exit codes suited for CI: `0` clean, `1` breaking changes, `2` unreadable spec.
+- Exit codes suited for CI: `0` clean, `1` breaking changes, `2` unreadable spec, `3` version policy violated.
 
 ## Quick Start
 
@@ -61,7 +63,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write   # only needed for `comment: true`
+  pull-requests: write   # only needed for `comment` / `pr-description`
 
 jobs:
   guard:
@@ -73,6 +75,10 @@ jobs:
           spec: openapi.yaml
           fail-on-breaking: true
           comment: true
+          # optional: require info.version to reflect the changes, and
+          # keep an "API change summary" section in the PR description
+          version-policy: error
+          pr-description: true
 ```
 
 The action reads the spec from the pull request's base commit with `git show`, compares it with the file in the checkout, appends the Markdown report to `$GITHUB_STEP_SUMMARY`, emits one `::error::` annotation per breaking change and exits with code 1 when breaking changes are found (unless `fail-on-breaking: false`).
@@ -85,13 +91,15 @@ The action reads the spec from the pull request's base commit with `git show`, c
 | `fail-on-breaking` | `true` | Fail the step when breaking changes are found. |
 | `base-ref` | PR base commit | Git ref to compare against, e.g. `main`. Useful outside `pull_request` events. |
 | `comment` | `false` | Post a PR comment with the report and keep it updated on subsequent pushes. |
-| `github-token` | `${{ github.token }}` | Token used for the comment. |
+| `version-policy` | from config (off) | `error` — fail when `info.version` does not reflect the changes; `warning` — report only; `off`. See [Version policy](#version-policy). |
+| `pr-description` | `false` | Keep an "API change summary" section in the PR description up to date. |
+| `github-token` | `${{ github.token }}` | Token used for the comment and the PR description. |
 | `config` | `.openapi-pr-guard.yaml` | Path to the config file. |
 | `python-version` | `3.12` | Python version used to run the checker. |
 
 ### Outputs
 
-`breaking-count`, `warning-count`, `non-breaking-count`, `has-breaking` — handy for conditional follow-up steps:
+`breaking-count`, `warning-count`, `non-breaking-count`, `has-breaking`, `change-summary` (Markdown), and — with the version policy enabled — `version-ok`, `base-version`, `head-version`, `required-bump`, `actual-bump`. Handy for conditional follow-up steps:
 
 ```yaml
       - uses: VsevaTech/openapi-pr-guard@v1
@@ -106,9 +114,9 @@ The action reads the spec from the pull request's base commit with `git show`, c
 ## CLI usage
 
 ```
-usage: openapi-pr-guard [-h] --base BASE --head HEAD [--format {json,markdown,text}]
+usage: openapi-pr-guard [-h] --base BASE --head HEAD [--format {json,markdown,summary,text}]
                         [--output OUTPUT] [--fail-on-breaking | --no-fail-on-breaking]
-                        [--config CONFIG] [--version]
+                        [--version-policy {off,warning,error}] [--config CONFIG] [--version]
 ```
 
 ```bash
@@ -121,11 +129,17 @@ openapi-pr-guard --base old.yaml --head new.yaml --format markdown --output repo
 # machine-readable
 openapi-pr-guard --base old.yaml --head new.yaml --format json | jq '.summary'
 
+# breaking changes are fine as long as info.version says so
+openapi-pr-guard --base old.yaml --head new.yaml --no-fail-on-breaking --version-policy error
+
+# just the "API change summary" block, e.g. for release notes
+openapi-pr-guard --base old.yaml --head new.yaml --format summary
+
 # without installing the console script
 python -m openapi_pr_guard --base old.yaml --head new.yaml
 ```
 
-Exit codes: `0` — no breaking changes, `1` — breaking changes found, `2` — a specification or the config could not be read or parsed.
+Exit codes: `0` — no breaking changes, `1` — breaking changes found, `2` — a specification or the config could not be read or parsed, `3` — the version policy was violated (only with `severity: error`; `1` takes precedence when breaking changes also fail the run).
 
 ## Example output
 
@@ -137,6 +151,16 @@ OpenAPI PR Guard
 BREAKING CHANGES: 6
 WARNINGS: 1
 NON-BREAKING: 3
+
+API CHANGE SUMMARY
+Added (1): GET /v1/subscriptions
+Removed (1): DELETE /v1/users/{id}
+Changed (5):
+- GET /v1/companies/{id}: 1 breaking
+- GET /v1/payments: 2 breaking, 1 warning
+- GET /v1/users: 2 non-breaking
+- POST /v1/users: 1 breaking
+- GET /v1/users/{id}: 1 breaking
 
 BREAKING
 - GET /v1/companies/{id}
@@ -225,6 +249,86 @@ ignore_rules:
 
 `--fail-on-breaking` / `--no-fail-on-breaking` on the command line override the file.
 
+## Version policy
+
+Detecting a breaking change is half the job; the other half is making sure it is *announced*. With the version policy enabled, the guard also compares `info.version` of the base and head specs and checks that the bump matches the most significant change in the diff:
+
+| Change level in the diff | Default minimum bump |
+|---|---|
+| `breaking` — any BREAKING finding | `major` |
+| `warning` — any WARNING finding (could not be classified safely) | `minor` |
+| `non_breaking` — additive contract changes (new endpoints, optional fields, deprecations, …) | `minor` |
+| `docs` — only `summary` / `description` / `tags` edits | `none` |
+
+Violations get their own rule ids and are reported separately from the contract findings:
+
+| Rule | When |
+|---|---|
+| `version.not-bumped` | A bump is required but `info.version` is unchanged |
+| `version.insufficient-bump` | The version moved, but not enough (e.g. `1.4.0 → 1.5.0` with a breaking change) |
+| `version.downgraded` | `info.version` went backwards |
+| `version.invalid` | `scheme: semver` and the head version is not `MAJOR.MINOR.PATCH` |
+| `version.missing` | A bump is required and the head spec has no `info.version` |
+
+The policy is opt-in and configurable rather than strict SemVer:
+
+```yaml
+# .openapi-pr-guard.yaml
+fail_on_breaking: false   # breaking changes are allowed…
+version_policy:           # …as long as the version says so
+  scheme: semver          # semver | any — `any`: the version string only has to change (dates, build numbers, "v3")
+  severity: error         # error → exit code 3 / failed check; warning → annotate and report only
+  pre_1_0: shift          # 0.x.y: minor bump stands in for major, patch for minor (Cargo convention) | strict
+  require:                # override any level: none | patch | minor | major
+    breaking: major
+    warning: minor
+    non_breaking: minor
+    docs: none
+```
+
+`version_policy: true` enables the defaults. The `--version-policy` CLI flag and the `version-policy` action input (`off` / `warning` / `error`) override `enabled` and `severity` from the file. Other details:
+
+- Pre-releases carry no compatibility promise (SemVer §9): `2.0.0-rc.1 → 2.0.0-rc.2` or `→ 2.0.0` is accepted regardless of the changes.
+- `v1.2.3` is accepted; build metadata (`+build.5`) is ignored.
+- If the base version is not SemVer (e.g. the project is switching schemes), only the head version is validated.
+- `version.*` rule ids can be listed in `ignore_rules` like any other rule.
+
+With `fail_on_breaking: false` plus `severity: error` the check expresses a common team rule: *"you may break the API, but only with a major version bump"*.
+
+## API change summary
+
+Every Markdown report contains an endpoint-level roll-up above the detailed findings, and the same block is available on its own:
+
+- `--format summary` on the CLI;
+- the `change-summary` step output;
+- `pr-description: true` in the Action — the block is inserted into the pull request description between `<!-- openapi-pr-guard:summary:<spec>:start/end -->` markers and replaced in place on every push, leaving the author's text untouched.
+
+```markdown
+### API change summary — `openapi.yaml`
+
+**Version:** `1.0.0` → `1.0.0` (none) — ❌ Breaking changes detected but info.version is still 1.0.0; a major bump is required
+
+**Findings:** ❌ 6 breaking · ⚠️ 1 warning · ✅ 3 non-breaking
+
+**➕ Added (1)**
+
+- `GET /v1/subscriptions`
+
+**➖ Removed (1)**
+
+- `DELETE /v1/users/{id}`
+
+**✏️ Changed (5)**
+
+- `GET /v1/companies/{id}` — ❌ 1 breaking
+- `GET /v1/payments` — ❌ 2 breaking · ⚠️ 1 warning
+- `GET /v1/users` — ✅ 2 non-breaking
+- `POST /v1/users` — ❌ 1 breaking
+- `GET /v1/users/{id}` — ❌ 1 breaking
+```
+
+Updating the description needs `pull-requests: write`. It does not re-trigger the workflow unless you subscribe to the `edited` pull-request event.
+
 ## Development
 
 ```bash
@@ -244,7 +348,9 @@ src/openapi_pr_guard/
 ├── diff.py            pairs paths & operations, runs rules
 ├── schema_diff.py     recursive JSON Schema comparison (request vs response aware)
 ├── rules/             one class per concern; register in rules/__init__.py
-├── reporter.py        text / markdown / json
+├── versioning.py      info.version policy (SemVer parsing, required vs actual bump)
+├── summary.py         endpoint-level roll-up: added / removed / changed
+├── reporter.py        text / markdown / json / summary
 ├── config.py          .openapi-pr-guard.yaml
 ├── cli.py             argparse entry point, exit codes
 └── github_action.py   the only GitHub-aware module
@@ -259,7 +365,7 @@ Adding a rule: implement a class with a `check(context) -> Iterable[Change]` met
 - Response headers and parameter `content`/`style` comparison.
 - Security requirement changes (new required auth scheme = breaking).
 - Multi-file specs / external `$ref`s.
-- Support for several spec files in one Action run.
+- Support for several spec files in one Action run (the PR-description markers are already per spec).
 
 ## License
 
