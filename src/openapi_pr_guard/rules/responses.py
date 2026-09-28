@@ -85,7 +85,62 @@ class ResponsesRule:
                     f"{location}.content.{media}.schema",
                 )
                 changes.extend(differ.changes)
+            changes.extend(_compare_headers(context, old, new, path, method, location))
         return changes
+
+
+def _compare_headers(
+    context: DiffContext, old: dict[str, Any], new: dict[str, Any], path: str, method: str, location: str
+) -> list[Change]:
+    """Documented response headers: removed = breaking, schema compared in the response direction."""
+    changes: list[Change] = []
+    old_headers, new_headers = _headers(old), _headers(new)
+    for key in sorted(old_headers.keys() - new_headers.keys()):
+        name = old_headers[key][0]
+        changes.append(
+            Change(
+                Severity.BREAKING,
+                "response.header-removed",
+                path,
+                f"Response header removed: {name}",
+                method,
+                f"{location}.headers.{name}",
+            )
+        )
+    for key in sorted(new_headers.keys() - old_headers.keys()):
+        name = new_headers[key][0]
+        changes.append(
+            Change(
+                Severity.NON_BREAKING,
+                "response.header-added",
+                path,
+                f"Response header added: {name}",
+                method,
+                f"{location}.headers.{name}",
+            )
+        )
+    for key in sorted(old_headers.keys() & new_headers.keys()):
+        name = new_headers[key][0]
+        header_loc = f"{location}.headers.{name}"
+        old_header = _resolve(context.base_resolver, old_headers[key][1], path, method, header_loc, changes)
+        new_header = _resolve(context.head_resolver, new_headers[key][1], path, method, header_loc, changes)
+        if old_header is None or new_header is None:
+            continue
+        if old_header.get("required") is True and new_header.get("required") is not True:
+            changes.append(
+                Change(
+                    Severity.WARNING,
+                    "response.header-no-longer-required",
+                    path,
+                    f"Response header no longer required: {name}",
+                    method,
+                    header_loc,
+                )
+            )
+        differ = SchemaDiffer(context.base_resolver, context.head_resolver, path, method, Direction.RESPONSE)
+        differ.compare(old_header.get("schema"), new_header.get("schema"), f"{header_loc}.schema")
+        changes.extend(differ.changes)
+    return changes
 
 
 def _responses(operation: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +155,14 @@ def _resolve(
 ) -> dict[str, Any] | None:
     resolved = resolve_or_warn(resolver, node, path=path, method=method, location=location, changes=changes)
     return resolved if isinstance(resolved, dict) else None
+
+
+def _headers(response: dict[str, Any]) -> dict[str, tuple[str, Any]]:
+    """Headers keyed case-insensitively (HTTP header names are case-insensitive): lower name -> (name, node)."""
+    headers = response.get("headers")
+    if not isinstance(headers, dict):
+        return {}
+    return {str(name).lower(): (str(name), node) for name, node in headers.items()}
 
 
 def _content(response: dict[str, Any]) -> dict[str, dict[str, Any]]:

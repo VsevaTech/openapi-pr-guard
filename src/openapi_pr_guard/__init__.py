@@ -5,7 +5,7 @@ from openapi_pr_guard.loader import SpecError, load_spec
 from openapi_pr_guard.models import Change, DiffResult, Severity
 from openapi_pr_guard.versioning import VersionCheck, VersionPolicy
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Change",

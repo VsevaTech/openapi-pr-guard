@@ -5,12 +5,14 @@ from openapi_pr_guard.rules.endpoints import EndpointPresenceRule, OperationMeta
 from openapi_pr_guard.rules.parameters import ParametersRule
 from openapi_pr_guard.rules.request_body import RequestBodyRule
 from openapi_pr_guard.rules.responses import ResponsesRule
+from openapi_pr_guard.rules.security import SecurityRule
 
 DEFAULT_RULES: tuple[Rule, ...] = (
     EndpointPresenceRule(),
     ParametersRule(),
     RequestBodyRule(),
     ResponsesRule(),
+    SecurityRule(),
     OperationMetadataRule(),
 )
 

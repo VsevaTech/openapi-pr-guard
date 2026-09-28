@@ -165,3 +165,31 @@ def test_pr_description_is_updated_between_markers(repo, monkeypatch):
     body = calls[1][2]["body"]
     assert body.startswith("Adds subscriptions.\n\n<!-- openapi-pr-guard:summary:openapi.yaml:start -->")
     assert "`GET /v1/subscriptions`" in body
+
+
+def test_security_contract_diff_through_action_entry_point(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "sec"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    shutil.copy(EXAMPLES / "security-base.yaml", repo / "openapi.yaml")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    shutil.copy(EXAMPLES / "security-breaking.yaml", repo / "openapi.yaml")
+    summary, output = tmp_path / "summary.md", tmp_path / "output.txt"
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("INPUT_SPEC", "openapi.yaml")
+    monkeypatch.setenv("INPUT_BASE_REF", base_sha)
+    monkeypatch.setenv("INPUT_VERSION_POLICY", "error")
+
+    assert github_action.main() == 1
+
+    assert "**POST /payments** — Required OAuth scope added: payments:write" in summary.read_text()
+    assert "**GET /payments/{id}** — Authentication alternative removed: ApiKeyAuth" in summary.read_text()
+    outputs = output.read_text()
+    assert "breaking-count=2" in outputs
+    assert "version-ok=false" in outputs and "required-bump=major" in outputs
+    assert "Required OAuth scope added: payments:write" in capsys.readouterr().err  # ::error:: annotation
