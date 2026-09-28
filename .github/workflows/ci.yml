@@ -56,10 +56,90 @@ jobs:
           echo "exit code: $code"
           test "$code" -eq 3
 
+      - name: CLI on security examples — scope added + auth alternative removed must exit 1
+        run: |
+          set +e
+          out=$(openapi-pr-guard --base examples/security-base.yaml --head examples/security-breaking.yaml)
+          code=$?
+          set -e
+          echo "$out"
+          test "$code" -eq 1
+          echo "$out" | grep -q "BREAKING CHANGES: 2"
+          echo "$out" | grep -q "Required OAuth scope added: payments:write"
+          echo "$out" | grep -q "Authentication alternative removed: ApiKeyAuth"
+
+      - name: CLI on security examples — compatible security change must exit 0
+        run: openapi-pr-guard --base examples/security-base.yaml --head examples/security-compatible.yaml
+
+      - name: CLI on security examples — 1.4.0 -> 1.5.0 violates, 1.4.0 -> 2.0.0 satisfies the version policy
+        run: |
+          set +e
+          openapi-pr-guard --base examples/security-base.yaml --head examples/security-breaking.yaml \
+            --no-fail-on-breaking --version-policy error
+          code=$?
+          set -e
+          test "$code" -eq 3
+          openapi-pr-guard --base examples/security-base.yaml --head examples/security-breaking-major.yaml \
+            --no-fail-on-breaking --version-policy error
+
       - name: CLI on examples — Markdown report to step summary
         run: |
           openapi-pr-guard --base examples/openapi-v1.yaml --head examples/openapi-v2-breaking.yaml \
             --format markdown --no-fail-on-breaking --version-policy warning >> "$GITHUB_STEP_SUMMARY"
+
+  action-security-demo:
+    name: Run the action on the security contract demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Commit security-base.yaml as the base revision of a demo spec
+        run: |
+          mkdir -p .demo
+          cp examples/security-base.yaml .demo/openapi.yaml
+          git add -f .demo/openapi.yaml
+          git -c user.name=ci -c user.email=ci@example.invalid commit -q -m "demo: security base"
+          echo "DEMO_BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          cp examples/security-breaking.yaml .demo/openapi.yaml
+
+      - name: OpenAPI PR Guard — breaking security change, version 1.4.0 -> 1.5.0
+        id: breaking
+        uses: ./
+        continue-on-error: true
+        with:
+          spec: .demo/openapi.yaml
+          base-ref: ${{ env.DEMO_BASE_SHA }}
+          version-policy: error
+
+      - name: Switch the head spec to the same change with version 2.0.0
+        run: cp examples/security-breaking-major.yaml .demo/openapi.yaml
+
+      - name: OpenAPI PR Guard — 1.4.0 -> 2.0.0 satisfies the policy, findings stay visible
+        id: major-guard
+        uses: ./
+        with:
+          spec: .demo/openapi.yaml
+          base-ref: ${{ env.DEMO_BASE_SHA }}
+          version-policy: error
+          fail-on-breaking: false
+
+      - name: Assert action outputs
+        env:
+          BREAKING_OUTCOME: ${{ steps.breaking.outcome }}
+          BREAKING_COUNT: ${{ steps.breaking.outputs.breaking-count }}
+          BREAKING_VERSION_OK: ${{ steps.breaking.outputs.version-ok }}
+          REQUIRED_BUMP: ${{ steps.breaking.outputs.required-bump }}
+          MAJOR_COUNT: ${{ steps.major-guard.outputs.breaking-count }}
+          MAJOR_VERSION_OK: ${{ steps.major-guard.outputs.version-ok }}
+        run: |
+          echo "breaking: outcome=$BREAKING_OUTCOME count=$BREAKING_COUNT version-ok=$BREAKING_VERSION_OK bump=$REQUIRED_BUMP"
+          echo "major:    count=$MAJOR_COUNT version-ok=$MAJOR_VERSION_OK"
+          test "$BREAKING_OUTCOME" = "failure"
+          test "$BREAKING_COUNT" = "2"
+          test "$BREAKING_VERSION_OK" = "false"
+          test "$REQUIRED_BUMP" = "major"
+          test "$MAJOR_COUNT" = "2"
+          test "$MAJOR_VERSION_OK" = "true"
 
   dogfood:
     name: Run the action on this repository

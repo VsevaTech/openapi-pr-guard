@@ -31,6 +31,8 @@ Design goals:
 ## Features
 
 - Detects removed endpoints and methods, removed or newly required parameters, request/response schema changes (types, required flags, removed properties, enums, formats, constraints), removed response codes and media types.
+- Detects authentication and authorization contract changes: OAuth scopes, security alternatives, API-key location/name and HTTP authentication schemes — see [Security contract changes](#security-contract-changes).
+- Compares documented response headers (removed, type changed, no longer required) and parameter serialization (`style`, `explode`, `allowReserved`).
 - Understands request vs. response direction: a new required property is breaking in a request body and harmless in a response.
 - Resolves local `$ref`s (including recursive schemas), merges path-level and operation-level parameters, treats `/users/{id}` and `/users/{userId}` as the same endpoint, handles OpenAPI 3.0 `nullable` and 3.1 `type: [..]`.
 - Optional **version policy**: checks that `info.version` moves in step with the contract (breaking change → major bump, …). SemVer-aware, but configurable and not SemVer-only.
@@ -216,6 +218,10 @@ The Markdown version (step summary / PR comment) shows the same findings with a 
 | Property removed from a response schema | BREAKING |
 | Response code removed | BREAKING |
 | Response media type removed | BREAKING |
+| Response header removed / header schema type changed | BREAKING |
+| Parameter `style` / `explode` changed for an array or object (or `label`/`matrix` style for any value) | BREAKING |
+| Authentication now required, new AND requirement, OR alternative removed, OAuth scope added | BREAKING |
+| Used security scheme removed, its `type`, API-key `in`/`name` or HTTP `scheme` changed | BREAKING |
 | `oneOf` / `anyOf` / `allOf` / `not` / `discriminator` changed | WARNING |
 | Constraint changed (`minimum`, `maxLength`, `pattern`, `additionalProperties`, …) | WARNING |
 | `format` changed | WARNING |
@@ -225,7 +231,11 @@ The Markdown version (step summary / PR comment) shows the same findings with a 
 | `operationId` changed | WARNING |
 | Unresolvable or external `$ref` | WARNING |
 | Request body removed | WARNING |
-| New endpoint / method / response code / media type | NON-BREAKING |
+| Response header no longer required; `allowReserved` dropped from a query parameter | WARNING |
+| Authentication removed (public now), AND requirement or OAuth scope no longer needed | WARNING |
+| `bearerFormat`, OAuth flow / URL or OpenID Connect URL of a used scheme changed | WARNING |
+| New endpoint / method / response code / media type / response header | NON-BREAKING |
+| New authentication alternative (OR) | NON-BREAKING |
 | New optional parameter / optional request property / response property | NON-BREAKING |
 | Request type widened (`integer` → `integer \| string`), response type narrowed | NON-BREAKING |
 | Parameter or property became optional in a request | NON-BREAKING |
@@ -234,6 +244,60 @@ The Markdown version (step summary / PR comment) shows the same findings with a 
 Changes to `description`, `title`, `example(s)` inside schemas are ignored entirely; documentation edits on an operation are reported once as `operation.docs-changed`.
 
 Every finding carries a stable `rule_id` (e.g. `schema.property-removed`, `parameter.required-added`) which is included in the JSON output and can be used in `ignore_rules`.
+
+## Security contract changes
+
+A client that could call an endpoint yesterday must still be able to call it with the same credentials and permissions. The guard compares the *effective* security requirement of every operation, not the raw `security` key:
+
+```yaml
+# before
+security:
+  - oauth2: [payments:read]
+
+# after
+security:
+  - oauth2: [payments:read, payments:write]
+```
+
+```
+BREAKING
+- POST /payments
+  Required OAuth scope added: payments:write
+  security.oauth2
+```
+
+Semantics, as defined by the OpenAPI specification:
+
+- Security Requirement Objects in a `security` array are **alternatives (OR)**.
+- Schemes inside one Security Requirement Object are **combined (AND)**, each with its own required scopes.
+- Operation-level `security` **overrides** root-level `security` entirely; an operation without `security` inherits the root one.
+- `security: []` (or an empty `{}` alternative) **explicitly allows anonymous access** — it is not "no information".
+
+The comparison keeps that structure — `(oauth2[read] AND apiKey) OR partnerKey` is never flattened into a set of scheme names. An old alternative is broken when no new alternative accepts its credentials (same schemes, subset of scopes); the findings then name the scheme or scope that made the difference:
+
+| Change | Severity | `rule_id` |
+|---|---|---|
+| Public → protected: `Authentication is now required` | BREAKING | `security.authentication-required` |
+| OR alternative removed: `Authentication alternative removed: apiKey` | BREAKING | `security.alternative-removed` |
+| Scheme added to an AND requirement: `Additional authentication requirement: apiKey` | BREAKING | `security.requirement-added` |
+| `Required OAuth scope added: payments:write` | BREAKING | `security.scope-added` |
+| Used scheme missing from `components.securitySchemes` | BREAKING | `security.scheme-removed` |
+| Scheme `type` changed (`apiKey` → `http`, …) | BREAKING | `security.scheme-type-changed` |
+| `API key location changed: header -> query` | BREAKING | `security.apikey-location-changed` |
+| `API key header changed: X-API-Key -> X-Partner-Key` (case-only header renames are ignored) | BREAKING | `security.apikey-name-changed` |
+| `HTTP authentication scheme changed: bearer -> basic` | BREAKING | `security.http-scheme-changed` |
+| Protected → public | WARNING | `security.authentication-removed` |
+| Scheme no longer required in an AND requirement | WARNING | `security.requirement-removed` |
+| `OAuth scope requirement removed: payments:write` | WARNING | `security.scope-removed` |
+| `bearerFormat` changed | WARNING | `security.bearer-format-changed` |
+| OAuth flow removed / flow URL changed, OIDC discovery URL changed | WARNING | `security.oauth-flow-removed`, `security.oauth-flow-changed`, `security.oidc-url-changed` |
+| New OR alternative | NON-BREAKING | `security.alternative-added` |
+
+Security *weakening* (anonymous access, fewer schemes or scopes) is not breaking for clients but is reported as a WARNING so that a reviewer sees it. Scheme renames are not guessed: `ApiKeyAuth` → `PartnerAuth` is reported as one alternative removed and one added. Scheme definitions are compared only for schemes the operation uses in both versions; `description` edits are ignored. Scheme-level findings point at `components.securitySchemes.<name>.<field>`, requirement-level findings at `security.<scheme>`.
+
+Try it: `openapi-pr-guard --base examples/security-base.yaml --head examples/security-breaking.yaml` (exit 1, 2 breaking changes); add `--no-fail-on-breaking --version-policy error` to see the version policy ask for a major bump (`1.4.0 → 1.5.0`, exit 3) and accept `examples/security-breaking-major.yaml` (`1.4.0 → 2.0.0`, exit 0 — the findings are still reported).
+
+**Scope.** OpenAPI PR Guard checks compatibility of the *documented* authentication contract. It does not validate identity-provider configuration, token issuance, RBAC policies or runtime authorization, and it never makes network calls.
 
 ## Configuration
 
@@ -348,6 +412,7 @@ src/openapi_pr_guard/
 ├── diff.py            pairs paths & operations, runs rules
 ├── schema_diff.py     recursive JSON Schema comparison (request vs response aware)
 ├── rules/             one class per concern; register in rules/__init__.py
+│   └── security.py    effective security (root/operation), OR/AND requirements, scheme definitions
 ├── versioning.py      info.version policy (SemVer parsing, required vs actual bump)
 ├── summary.py         endpoint-level roll-up: added / removed / changed
 ├── reporter.py        text / markdown / json / summary
@@ -362,8 +427,7 @@ Adding a rule: implement a class with a `check(context) -> Iterable[Change]` met
 
 - Per-rule severity overrides in the config (`schema.enum-values-added: breaking`).
 - Ignore paths/operations by glob or by `x-openapi-pr-guard: ignore` vendor extension.
-- Response headers and parameter `content`/`style` comparison.
-- Security requirement changes (new required auth scheme = breaking).
+- Parameters serialized with `content` instead of `schema`.
 - Multi-file specs / external `$ref`s.
 - Support for several spec files in one Action run (the PR-description markers are already per spec).
 
