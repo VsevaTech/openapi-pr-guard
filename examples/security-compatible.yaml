@@ -1,0 +1,112 @@
+openapi: 3.0.3
+info:
+  title: Payments API (security contract demo)
+  version: 1.5.0
+
+# Root-level security: inherited by every operation without its own `security`.
+security:
+  - OAuth2:
+      - payments:read
+
+paths:
+  /payments:
+    post:
+      operationId: createPayment
+      summary: Create a payment
+      security:
+        - OAuth2:
+            - payments:read
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePayment"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+    get:
+      operationId: listPayments
+      summary: List payments (inherits root security)
+      responses:
+        "200":
+          description: A page of payments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Payment"
+
+  /payments/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getPayment
+      summary: Get a payment — OAuth OR API key
+      security:
+        - OAuth2:
+            - payments:read
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: The payment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "404":
+          description: Not found
+
+  /health:
+    get:
+      operationId: health
+      summary: Health check — explicitly public
+      security: []
+      responses:
+        "200":
+          description: OK
+
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth/token
+          scopes:
+            payments:read: Read payments and refunds
+            payments:write: Create payments
+    ApiKeyAuth:
+      type: apiKey
+      description: Partner API key issued in the merchant portal.
+      in: header
+      name: X-API-Key
+  schemas:
+    CreatePayment:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: number
+        currency:
+          type: string
+    Payment:
+      type: object
+      required: [id, amount, currency]
+      properties:
+        id:
+          type: string
+        amount:
+          type: number
+        currency:
+          type: string
